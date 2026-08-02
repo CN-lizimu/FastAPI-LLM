@@ -76,3 +76,18 @@ logs/
 # Optional: model/data artifacts
 # =========================
 data/
+
+# =========================
+# Local development files
+# =========================
+
+# Frontend dependencies
+frontend/node_modules/
+
+# Backend runtime data
+backend/chroma_db/
+backend/cache/
+
+# Personal editor/workspace files
+.obsidian/
+项目文档/
