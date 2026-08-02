@@ -48,6 +48,7 @@ async def refresh_session_summary_if_needed(
 
     last_summary_index = current_index
     old_summary = await ai_chat_crud.get_chat_session_summary(db, user_id, session_id)
+    #这里存在问题，summary的更新应该拿所有尚未被summary过的消息，而不是最近十条
     recent_messages = await ai_chat_crud.get_recent_chat_messages(db, user_id, session_id, limit=10)
     recent_dialogue_text = _format_recent_messages_for_summary(recent_messages)  # orm对象转换成文本格式，作为生成摘要的输入
 

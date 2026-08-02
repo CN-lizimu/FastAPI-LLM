@@ -60,3 +60,66 @@ class UserToken(Base):
 
     def __repr__(self):
         return f"<UserToken(id={self.id}, user_id={self.user_id}, token='{self.token}')>"
+
+
+class UserAuthState(Base):
+    """
+    用户认证状态表。
+
+    token_version 用于全局失效某个用户的全部 JWT，例如改密、后台踢下线。
+    """
+    __tablename__ = "user_auth_state"
+
+    __table_args__ = (
+        Index("idx_user_auth_state_user_id", "user_id", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="认证状态ID")
+    user_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False, comment="用户ID")
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="令牌版本号")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+
+class UserRefreshToken(Base):
+    """
+    Refresh Token 服务端状态表。
+
+    只保存 refresh token 的 jti 哈希，不保存原始 token。
+    """
+    __tablename__ = "user_refresh_token"
+
+    __table_args__ = (
+        Index("idx_user_refresh_token_user_id", "user_id"),
+        Index("idx_user_refresh_token_jti_hash", "jti_hash", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="Refresh Token ID")
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="用户ID")
+    jti_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="Refresh Token JTI 哈希")
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, comment="签发时的令牌版本号")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="过期时间")
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="撤销时间")
+    replaced_by_jti_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="轮换后的 Refresh Token JTI 哈希")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时间")
+
+
+class UserTokenBlacklist(Base):
+    """
+    Access Token 黑名单表。
+
+    JWT 本身无状态，登出时需要把未过期 access token 的 jti 放入黑名单。
+    """
+    __tablename__ = "user_token_blacklist"
+
+    __table_args__ = (
+        Index("idx_user_token_blacklist_jti_hash", "jti_hash", unique=True),
+        Index("idx_user_token_blacklist_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="黑名单ID")
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="用户ID")
+    jti_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="Access Token JTI 哈希")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="原令牌过期时间")
+    reason: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="加入黑名单原因")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时间")

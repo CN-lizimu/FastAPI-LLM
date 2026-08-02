@@ -34,6 +34,11 @@ class UserInfoResponse(UserInfoBase):
 # data 数据类型
 class UserAuthResponse(BaseModel):
     token: str
+    access_token: str = Field(..., alias="accessToken")
+    refresh_token: str = Field(..., alias="refreshToken")
+    token_type: str = Field("Bearer", alias="tokenType")
+    expires_in: int = Field(..., alias="expiresIn")
+    refresh_expires_in: int = Field(..., alias="refreshExpiresIn")
     user_info: UserInfoResponse = Field(..., alias="userInfo")
 
     # 模型类配置
@@ -55,3 +60,15 @@ class UserUpdateRequest(BaseModel):
 class UserChangePasswordRequest(BaseModel):
     old_password: str = Field(..., alias="oldPassword", description="旧密码")
     new_password: str = Field(..., min_length=6, alias="newPassword", description="新密码")
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(..., alias="refreshToken")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = Field(None, alias="refreshToken")
+
+    model_config = ConfigDict(populate_by_name=True)

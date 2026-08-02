@@ -31,6 +31,7 @@ _load_env()
 
 from config.db_conf import AsyncSessionLocal
 from config.chroma_conf import IngestConfig, load_config_from_env
+from config.settings import get_settings
 from models.news import News
 
 
@@ -45,7 +46,7 @@ def _setup_logging() -> None:#设置日志配置，指定日志级别、格式�
 
 def _get_dashscope_api_key() -> str:
     # 与项目现有 ai_chat 模块保持一致：兼容两种变量名
-    return os.getenv("DASHSCOPE_API_KEY") or os.getenv("ali_access_key") or ""
+    return get_settings().dashscope_key
 
 
 def _build_embedding_model() -> DashScopeEmbeddings:
@@ -54,7 +55,7 @@ def _build_embedding_model() -> DashScopeEmbeddings:
         raise RuntimeError("未检测到 DashScope API Key，请在 .env 中配置 DASHSCOPE_API_KEY 或 ali_access_key")
 
     return DashScopeEmbeddings(
-        model=os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v3"),#默认使用 DashScope 的 text-embedding-v3 模型，这个模型在文本向量化方面表现良好，适合大多数应用场景。如果需要使用其他模型，可以通过环境变量 DASHSCOPE_EMBEDDING_MODEL 来指定，例如 "text-embedding-v2" 或 "text-embedding-3-small" 等。这样可以根据实际需求选择不同的模型，以获得更好的性能或更快的速度。
+        model=get_settings().dashscope_embedding_model,
         dashscope_api_key=api_key,
         max_retries=3,#增加重试机制，提升稳定性，尤其是在批量处理大量文本时，偶尔可能遇到网络问题或API限制导致请求失败，重试可以帮助自动恢复并完成任务
     )
@@ -131,16 +132,44 @@ def _build_documents_for_news(news: News, splitter: RecursiveCharacterTextSplitt
 
     return documents, ids
 
-
+#分页读取数据库，类似显存batch
 async def _fetch_news_batch(db: AsyncSession, offset: int, limit: int) -> Sequence[News]:
     stmt: Select[tuple[News]] = select(News).order_by(News.id.asc()).offset(offset).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
 
-
+#批量上传chunk，也是和patch类似
 def _iter_slices(items: Sequence, size: int) -> Iterable[Sequence]:
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+#如果存在某些因素导致的失败，进行自动重试
+async def _add_documents_with_retry(
+    vector_store: Chroma,
+    documents: Sequence[Document],
+    ids: Sequence[str],
+    config: IngestConfig,
+    logger: logging.Logger,
+) -> None:
+    attempts = max(config.add_retry_attempts, 1)
+    delay = max(config.add_retry_delay_seconds, 0)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            vector_store.add_documents(list(documents), ids=list(ids))
+            return
+        except Exception as exc:
+            if attempt >= attempts:
+                raise
+            logger.warning(
+                "写入 Chroma 失败，准备重试: attempt=%s/%s, ids=%s, error=%s",
+                attempt,
+                attempts,
+                list(ids),
+                exc,
+            )
+            if delay:
+                await asyncio.sleep(delay * attempt)
 
 
 async def ingest_news_to_chroma(config: IngestConfig) -> None:
@@ -150,7 +179,7 @@ async def ingest_news_to_chroma(config: IngestConfig) -> None:
 
     total_news = 0
     total_chunks = 0
-    offset = 0
+    offset = max(config.start_offset, 0)
 
     async with AsyncSessionLocal() as db:
         while True:
@@ -178,7 +207,7 @@ async def ingest_news_to_chroma(config: IngestConfig) -> None:
                     _iter_slices(documents, config.write_batch_size),
                     _iter_slices(ids, config.write_batch_size),
                 ):
-                    vector_store.add_documents(list(doc_slice), ids=list(id_slice))
+                    await _add_documents_with_retry(vector_store, doc_slice, id_slice, config, logger)
 
                 total_news += 1
                 total_chunks += len(documents)

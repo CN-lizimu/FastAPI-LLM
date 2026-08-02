@@ -1,13 +1,25 @@
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.users import User, UserToken
+from config.settings import get_settings
+from models.users import User, UserAuthState, UserRefreshToken, UserToken, UserTokenBlacklist
 from schemas.users import UserChangePasswordRequest, UserRequest, UserUpdateRequest
 from utils import security
+from utils.jwt_tokens import create_jwt, decode_jwt, from_timestamp, hash_jti, utc_now_naive, JWTError
+
+
+@dataclass
+class TokenPair:
+    access_token: str
+    refresh_token: str
+    token_type: str
+    expires_in: int
+    refresh_expires_in: int
 
 
 # 根据用户名查询数据库
@@ -48,6 +60,58 @@ async def create_token(db: AsyncSession, user_id: int):
 
     return token
 
+
+async def _get_auth_state(db: AsyncSession, user_id: int) -> UserAuthState:
+    result = await db.execute(select(UserAuthState).where(UserAuthState.user_id == user_id))
+    state = result.scalar_one_or_none()
+    if state:
+        return state
+
+    state = UserAuthState(user_id=user_id, token_version=1)
+    db.add(state)
+    await db.flush()
+    return state
+
+
+async def issue_token_pair(db: AsyncSession, user: User) -> TokenPair:
+    settings = get_settings()
+    state = await _get_auth_state(db, user.id)
+
+    access_delta = timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    refresh_delta = timedelta(days=settings.jwt_refresh_token_expire_days)
+
+    access_token, access_claims = create_jwt(
+        user_id=user.id,
+        username=user.username,
+        token_type="access",
+        token_version=state.token_version,
+        expires_delta=access_delta,
+    )
+    refresh_token, refresh_claims = create_jwt(
+        user_id=user.id,
+        username=user.username,
+        token_type="refresh",
+        token_version=state.token_version,
+        expires_delta=refresh_delta,
+    )
+
+    refresh_row = UserRefreshToken(
+        user_id=user.id,
+        jti_hash=hash_jti(refresh_claims["jti"]),
+        token_version=state.token_version,
+        expires_at=from_timestamp(refresh_claims["exp"]).replace(tzinfo=None),
+    )
+    db.add(refresh_row)
+    await db.commit()
+
+    return TokenPair(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="Bearer",
+        expires_in=int(access_delta.total_seconds()),
+        refresh_expires_in=int(refresh_delta.total_seconds()),
+    )
+
 # 验证用户名和密码
 async def authenticate_user(db: AsyncSession, username: str, password: str):
     user = await get_user_by_username(db, username)
@@ -61,16 +125,136 @@ async def authenticate_user(db: AsyncSession, username: str, password: str):
 
 # 根据 Token 查询用户：验证 Token → 查询用户
 async def get_user_by_token(db: AsyncSession, token: str):
-    query = select(UserToken).where(UserToken.token == token)
-    result = await db.execute(query)
-    db_token = result.scalar_one_or_none()
-
-    if not db_token or db_token.expires_at < datetime.now():
+    try:
+        claims = decode_jwt(token, expected_type="access")
+    except JWTError:
         return None
 
-    query = select(User).where(User.id == db_token.user_id)
-    result = await db.execute(query)
+    user_id = int(claims["sub"])
+    jti_hash = hash_jti(claims["jti"])
+
+    blacklist_result = await db.execute(
+        select(UserTokenBlacklist).where(UserTokenBlacklist.jti_hash == jti_hash)
+    )
+    if blacklist_result.scalar_one_or_none():
+        return None
+
+    state = await _get_auth_state(db, user_id)
+    if state.token_version != int(claims.get("ver", 0)):
+        return None
+
+    result = await db.execute(select(User).where(User.id == user_id))
     return result.scalar_one_or_none()
+
+
+async def get_access_claims(db: AsyncSession, token: str) -> dict | None:
+    try:
+        claims = decode_jwt(token, expected_type="access")
+    except JWTError:
+        return None
+
+    user_id = int(claims["sub"])
+    jti_hash = hash_jti(claims["jti"])
+    blacklist_result = await db.execute(
+        select(UserTokenBlacklist).where(UserTokenBlacklist.jti_hash == jti_hash)
+    )
+    if blacklist_result.scalar_one_or_none():
+        return None
+
+    state = await _get_auth_state(db, user_id)
+    if state.token_version != int(claims.get("ver", 0)):
+        return None
+    return claims
+
+
+async def refresh_token_pair(db: AsyncSession, refresh_token: str) -> TokenPair | None:
+    try:
+        claims = decode_jwt(refresh_token, expected_type="refresh")
+    except JWTError:
+        return None
+
+    user_id = int(claims["sub"])
+    jti_hash = hash_jti(claims["jti"])
+    result = await db.execute(
+        select(UserRefreshToken).where(UserRefreshToken.jti_hash == jti_hash)
+    )
+    refresh_row = result.scalar_one_or_none()
+    if (
+        not refresh_row
+        or refresh_row.revoked_at is not None
+        or refresh_row.expires_at <= utc_now_naive()
+    ):
+        return None
+
+    state = await _get_auth_state(db, user_id)
+    if state.token_version != int(claims.get("ver", 0)) or refresh_row.token_version != state.token_version:
+        return None
+
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        return None
+
+    refresh_row.revoked_at = utc_now_naive()
+    pair = await issue_token_pair(db, user)
+    new_refresh_claims = decode_jwt(pair.refresh_token, expected_type="refresh")
+    refresh_row.replaced_by_jti_hash = hash_jti(new_refresh_claims["jti"])
+    await db.commit()
+    return pair
+
+
+async def blacklist_access_token(db: AsyncSession, token: str, reason: str = "logout") -> bool:
+    try:
+        claims = decode_jwt(token, expected_type="access")
+    except JWTError:
+        return False
+
+    jti_hash = hash_jti(claims["jti"])
+    existing = await db.execute(select(UserTokenBlacklist).where(UserTokenBlacklist.jti_hash == jti_hash))
+    if existing.scalar_one_or_none():
+        return True
+
+    db.add(
+        UserTokenBlacklist(
+            user_id=int(claims["sub"]),
+            jti_hash=jti_hash,
+            expires_at=from_timestamp(claims["exp"]).replace(tzinfo=None),
+            reason=reason,
+        )
+    )
+    await db.commit()
+    return True
+
+
+async def revoke_refresh_token(db: AsyncSession, refresh_token: str) -> bool:
+    try:
+        claims = decode_jwt(refresh_token, expected_type="refresh")
+    except JWTError:
+        return False
+
+    result = await db.execute(
+        select(UserRefreshToken).where(UserRefreshToken.jti_hash == hash_jti(claims["jti"]))
+    )
+    refresh_row = result.scalar_one_or_none()
+    if not refresh_row:
+        return False
+    if refresh_row.revoked_at is None:
+        refresh_row.revoked_at = utc_now_naive()
+        await db.commit()
+    return True
+
+
+async def revoke_all_user_tokens(db: AsyncSession, user_id: int) -> None:
+    state = await _get_auth_state(db, user_id)
+    state.token_version += 1
+    state.updated_at = utc_now_naive()
+
+    await db.execute(
+        update(UserRefreshToken)
+        .where(UserRefreshToken.user_id == user_id, UserRefreshToken.revoked_at.is_(None))
+        .values(revoked_at=utc_now_naive())
+    )
+    await db.commit()
 
 
 # 更新用户信息: update更新 → 检查是否命中 → 获取更新后的用户返回
@@ -107,4 +291,5 @@ async def change_password(db: AsyncSession, user: User, password_data: UserChang
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    await revoke_all_user_tokens(db, user.id)
     return True

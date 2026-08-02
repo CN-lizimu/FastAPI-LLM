@@ -9,9 +9,10 @@ from dotenv import load_dotenv
 # Load environment variables from backend/.env (if present) and the environment
 load_dotenv()
 
-ASYNC_DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/news_db"
-)
+# ASYNC_DATABASE_URL = os.getenv(
+#     "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/news_db"
+# )
+ASYNC_DATABASE_URL = "mysql+aiomysql://root:sql123@localhost:3306/news_app?charset=utf8mb4"
 # 创建异步引擎
 #管理连接池，设置连接池大小和最大溢出连接数，连接池是为了提高数据库连接的效率和性能，
 # 避免每次请求都创建和销毁连接。通过设置pool_size和max_overflow参数，

@@ -9,7 +9,8 @@ class ChatMessage(BaseModel):
 
 
 class AIChatRequest(BaseModel):
-    model: str = "qwen3-max-preview"
+    # 兼容旧前端字段。后端实际调用模型统一读取 .env 的 LLM_MODEL_ID，不再信任请求体 model。
+    model: Optional[str] = None
     messages: list[ChatMessage] = Field(default_factory=list)
     stream: bool = True
     session_id: Optional[str] = Field(default=None, comment="对话ID")

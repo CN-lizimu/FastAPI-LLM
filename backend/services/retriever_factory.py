@@ -1,14 +1,10 @@
-import os
 from functools import lru_cache
 
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.vectorstores import Chroma
 
 from config.chroma_conf import load_config_from_env
-
-
-def _get_dashscope_key() -> str:
-    return os.getenv("DASHSCOPE_API_KEY") or os.getenv("ali_access_key") or ""
+from config.settings import get_settings
 
 
 @lru_cache(maxsize=1)
@@ -17,14 +13,15 @@ def get_news_retriever():
     获取全局单一的 Chroma Retriever 实例，避免每次请求重复初始化和加载模型参数。
     使用 LRU 缓存保证整个应用生命周期内只实例化一次。
     """
-    api_key = _get_dashscope_key()
+    settings = get_settings()
+    api_key = settings.dashscope_key
     if not api_key:
         raise RuntimeError("服务端未配置 DASHSCOPE_API_KEY，无法初始化检索器")
 
     chroma_config = load_config_from_env()
     
     embeddings = DashScopeEmbeddings(
-        model=os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v3"),
+        model=settings.dashscope_embedding_model,
         dashscope_api_key=api_key
     )
     

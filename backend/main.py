@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from routers import news, users, favorite, history, ai_chat
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.db_bootstrap import ensure_ai_chat_tables
+from services.db_bootstrap import ensure_ai_chat_tables, ensure_auth_tables
 from utils.exception_handlers import register_exception_handlers
 
 app = FastAPI()
@@ -10,7 +10,8 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_db_bootstrap():
-    # 启动时确保 AI 聊天相关表存在
+    # 启动时确保 AI 聊天和认证相关表存在
+    await ensure_auth_tables()
     await ensure_ai_chat_tables()
 
 # 注册异常处理器

@@ -110,6 +110,8 @@ async def get_chat_content_by_session(db: AsyncSession, user_id: int, session_id
     )
     result = await db.execute(query)
     return result.scalars().all()
+
+#这部分需要调整，
 #获取某个会话的summary，现获取当前会话的所有消息内容，取最后一条消息的content作为summary，后续可以改成调用模型接口生成一个总结文本，更新到UserChatSession的summary字段里
 async def get_chat_session_summary(db: AsyncSession, user_id: int, session_id: str):
     query = select(UserChatSession.summary).where(
@@ -148,4 +150,5 @@ async def get_recent_chat_messages(db: AsyncSession, user_id: int, session_id: s
         .limit(limit)
     )
     result = await db.execute(query)
+    #这里顺序要改成倒序，
     return result.scalars().all()#orm

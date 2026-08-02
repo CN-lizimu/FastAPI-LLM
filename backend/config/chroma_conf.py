@@ -13,6 +13,9 @@ class IngestConfig:
     chunk_overlap: int = 120
     db_fetch_batch_size: int = 200
     write_batch_size: int = 100
+    start_offset: int = 0
+    add_retry_attempts: int = 3
+    add_retry_delay_seconds: float = 2.0
     recreate_collection: bool = False
     dry_run: bool = False
 
@@ -27,6 +30,9 @@ def load_config_from_env() -> IngestConfig:
       - CHROMA_CHUNK_OVERLAP
       - CHROMA_DB_FETCH_BATCH_SIZE
       - CHROMA_WRITE_BATCH_SIZE
+      - CHROMA_START_OFFSET
+      - CHROMA_ADD_RETRY_ATTEMPTS
+      - CHROMA_ADD_RETRY_DELAY_SECONDS
       - CHROMA_RECREATE_COLLECTION
       - CHROMA_DRY_RUN
     """
@@ -37,6 +43,9 @@ def load_config_from_env() -> IngestConfig:
         chunk_overlap=int(os.getenv("CHROMA_CHUNK_OVERLAP", "100")),
         db_fetch_batch_size=int(os.getenv("CHROMA_DB_FETCH_BATCH_SIZE", "5")),#一次从数据库读取的新闻chunks数。
         write_batch_size = int(os.getenv("CHROMA_WRITE_BATCH_SIZE", "5")),
+        start_offset=int(os.getenv("CHROMA_START_OFFSET", "0")),
+        add_retry_attempts=int(os.getenv("CHROMA_ADD_RETRY_ATTEMPTS", "3")),
+        add_retry_delay_seconds=float(os.getenv("CHROMA_ADD_RETRY_DELAY_SECONDS", "2")),
         recreate_collection = os.getenv("CHROMA_RECREATE_COLLECTION", "false").lower() in ("1", "true", "yes"),
         dry_run=os.getenv("CHROMA_DRY_RUN", "false").lower() in ("1", "true", "yes"),
     )

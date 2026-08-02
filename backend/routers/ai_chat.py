@@ -1,7 +1,5 @@
 import json
-import os
 
-from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,19 +21,18 @@ from utils.create_prompt import (
 from schemas.ai_chat import AIChatRequest, ChatMessage, ChatSessionResponse, ChatSessionMessagesResponse
 from services.update_summary import refresh_session_summary_if_needed
 from services.retriever_factory import get_news_retriever
-from services.model_factory import get_chat_model
+from services.model_factory import (
+    get_chat_model,
+    get_chat_model_name,
+    get_dashscope_api_key,
+    get_dashscope_chat_endpoint,
+)
 from services.get_retrievel import get_retrievel_chain
 
 from utils.create_prompt import SYSTEM_PROMPT_TEMPLATE_PATH, USER_PROMPT_TEMPLATE_PATH
 
 
-load_dotenv()
-
 router = APIRouter(prefix="/api/ai", tags=["ai"])
-
-def _get_dashscope_key() -> str:
-    # 兼容不同环境变量命名，意义不大，只写自己写死的那个就可以了，主要是为了演示在不同环境变量命名之间切换的逻辑
-    return os.getenv("DASHSCOPE_API_KEY") or os.getenv("ali_access_key") or ""
 
 @router.get("/sessions")
 async def get_chat_sessions(
@@ -51,6 +48,7 @@ async def get_chat_sessions(
         )
         for s in sessions
     ]
+    # data = [ChatSessionResponse(**s.dict()) for s in sessions]
     return success_response(message="获取用户会话记录成功", data=data)
 
 
@@ -112,14 +110,12 @@ async def ai_chat(
         current_session = await ai_chat_crud.create_chat_session(db, user.id)
         session_id = current_session.session_id
 
-    api_key = _get_dashscope_key()
+    api_key = get_dashscope_api_key()
     if not api_key:
         raise HTTPException(status_code=500, detail="服务端未配置 DASHSCOPE_API_KEY")
 
-    api_endpoint = os.getenv(
-        "DASHSCOPE_API_ENDPOINT",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    )
+    active_model_name = get_chat_model_name()
+    api_endpoint = get_dashscope_chat_endpoint()
 
     system_prompt_text = load_template_text(SYSTEM_PROMPT_TEMPLATE_PATH)
     user_prompt_text = load_template_text(USER_PROMPT_TEMPLATE_PATH)
@@ -176,7 +172,7 @@ async def ai_chat(
         session_id=session_id,
         role="user",
         content=current_question,
-        model_name=payload.model,
+        model_name=active_model_name,
     )
 
     if payload.stream:
@@ -217,10 +213,10 @@ async def ai_chat(
                     session_id=session_id,
                     role="assistant",
                     content=assistant_text,
-                    model_name=payload.model,
+                    model_name=active_model_name,
                     finish_reason="stop",
                 )
-                await refresh_session_summary_if_needed(db, user.id, session_id,current_session.last_summary_index, new_chat_message.message_index, api_endpoint, api_key, payload.model)
+                await refresh_session_summary_if_needed(db, user.id, session_id,current_session.last_summary_index, new_chat_message.message_index, api_endpoint, api_key, active_model_name)
 
         return StreamingResponse(
             stream_generator(),
@@ -250,7 +246,7 @@ async def ai_chat(
             session_id=session_id,
             role="assistant",
             content=assistant_text,
-            model_name=payload.model,
+            model_name=active_model_name,
             finish_reason="stop",
         )
         await refresh_session_summary_if_needed(
@@ -261,7 +257,7 @@ async def ai_chat(
             new_chat_message.message_index,
             api_endpoint,
             api_key,
-            payload.model,
+            active_model_name,
         )
 
     return success_response(
