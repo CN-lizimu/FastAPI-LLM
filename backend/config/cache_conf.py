@@ -1,53 +1,85 @@
 import json
+import logging
 from typing import Any
 
 import redis.asyncio as redis
 
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
+from config.settings import get_settings
+from utils.observability import log_event
 
 
-# 创建 Redis 的连接对象
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
 redis_client = redis.Redis(
-    host=REDIS_HOST,  # Redis 服务器的主机地址
-    port=REDIS_PORT,  # Redis 端口号
-    db=REDIS_DB,  # Redis 数据库编号，0~15
-    decode_responses=True  # 是否将字节数据解码为字符串
+    host=settings.redis_host,
+    port=settings.redis_port,
+    db=settings.redis_db,
+    password=settings.redis_password or None,
+    decode_responses=True,
+    socket_timeout=settings.redis_socket_timeout_seconds,
+    socket_connect_timeout=settings.redis_connect_timeout_seconds,
 )
 
 
-# 设置 和 读取（字符串 和 列表或字典）"[{}]"
-# 读取：字符串
 async def get_cache(key: str):
-    # return await redis_client.get(key)
     try:
         return await redis_client.get(key)
-    except Exception as e:
-        print(f"获取缓存失败：{e}")
+    except redis.RedisError as exc:
+        log_event(logger, logging.WARNING, "redis_get_failed", key=key, error_type=type(exc).__name__)
         return None
 
 
-# 读取：列表或字典
 async def get_json_cache(key: str):
     try:
         data = await redis_client.get(key)
-        if data:
-            return json.loads(data)  # 序列化
-        return None
-    except Exception as e:
-        print(f"获取 JSON 缓存失败：{e}")
+        return json.loads(data) if data else None
+    except (redis.RedisError, json.JSONDecodeError) as exc:
+        log_event(logger, logging.WARNING, "redis_json_get_failed", key=key, error_type=type(exc).__name__)
         return None
 
 
-# 设置缓存 setex(key, expire, value)
 async def set_cache(key: str, value: Any, expire: int = 3600):
     try:
         if isinstance(value, (dict, list)):
-            # 转字符串再存
-            value = json.dumps(value, ensure_ascii=False)  # 中文正常保存
+            value = json.dumps(value, ensure_ascii=False)
         await redis_client.setex(key, expire, value)
         return True
-    except Exception as e:
-        print(f"设置缓存失败：{e}")
+    except redis.RedisError as exc:
+        log_event(logger, logging.WARNING, "redis_set_failed", key=key, error_type=type(exc).__name__)
         return False
+
+
+async def delete_cache(*keys: str) -> int:
+    if not keys:
+        return 0
+    try:
+        return int(await redis_client.delete(*keys))
+    except redis.RedisError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "redis_delete_failed",
+            keys=list(keys),
+            error_type=type(exc).__name__,
+        )
+        return 0
+
+
+async def delete_cache_pattern(pattern: str) -> int:
+    try:
+        keys = [key async for key in redis_client.scan_iter(match=pattern, count=100)]
+        return int(await redis_client.delete(*keys)) if keys else 0
+    except redis.RedisError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "redis_pattern_delete_failed",
+            pattern=pattern,
+            error_type=type(exc).__name__,
+        )
+        return 0
+
+
+async def close_redis() -> None:
+    await redis_client.aclose()

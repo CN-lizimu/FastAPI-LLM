@@ -1,12 +1,11 @@
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import chromadb
 from dotenv import load_dotenv
-import shutil
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,17 +63,19 @@ def _build_embedding_model() -> DashScopeEmbeddings:
 def _build_vector_store(config: IngestConfig) -> Chroma:#构建 Chroma 向量库实例，使用 DashScopeEmbeddings 作为嵌入模型，并配置持久化目录和集合名称。如果指定了 recreate_collection 参数为 True，则会先删除已存在的同名集合，再创建一个新的集合。这确保了在每次运行脚本时都能从一个干净的状态开始，避免旧数据的干扰。同时，通过 collection_metadata 设置 HNSW 索引的空间类型为 cosine，以优化基于余弦相似度的向量搜索性能。
     embedding_model = _build_embedding_model()
 
-    # 如果要求重建集合，删除持久化目录以确保从干净状态开始（兼容不同 Chroma 客户端实现）
-    persist_dir = Path(config.persist_directory)
-    if config.recreate_collection and persist_dir.exists():
-        logging.info("删除旧持久化目录: %s", config.persist_directory)
-        shutil.rmtree(persist_dir)
+    # 只删除指定集合，避免同一持久化目录中的旧集合或候选集合被一并破坏。
+    if config.recreate_collection:
+        client = chromadb.PersistentClient(path=config.persist_directory)
+        collection_names = {collection.name for collection in client.list_collections()}
+        if config.collection_name in collection_names:
+            logging.info("删除旧集合: %s", config.collection_name)
+            client.delete_collection(config.collection_name)
 
     vector_store = Chroma(
         collection_name=config.collection_name,
         embedding_function=embedding_model,
         persist_directory=config.persist_directory,
-        collection_metadata={"hnsw:space": "cosine"},
+        collection_metadata={"hnsw:space": config.distance_metric},
     )
     return vector_store
 

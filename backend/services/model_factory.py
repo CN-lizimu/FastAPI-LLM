@@ -19,14 +19,19 @@ def get_dashscope_chat_endpoint() -> str:
 
 @lru_cache(maxsize=1)
 def get_chat_model() -> ChatOpenAI:
-    """Get a singleton OpenAI-compatible chat model instance via DashScope."""
-    api_key = get_dashscope_api_key()
+    """Return the shared OpenAI-compatible DashScope chat model."""
+    settings = get_settings()
+    api_key = settings.dashscope_key
     if not api_key:
         raise RuntimeError("服务端未配置 DASHSCOPE_API_KEY，无法初始化 LangChain Chat 模型")
 
     return ChatOpenAI(
-        model=get_chat_model_name(),
+        model=settings.chat_model_id,
         api_key=api_key,
-        base_url=get_settings().dashscope_api_base_url,
+        base_url=settings.dashscope_api_base_url,
         streaming=True,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+        max_retries=settings.llm_max_retries,
+        request_timeout=settings.llm_request_timeout_seconds,
     )

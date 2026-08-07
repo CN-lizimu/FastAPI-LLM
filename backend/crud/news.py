@@ -1,5 +1,7 @@
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from cache.news_cache import invalidate_news_after_view_update
 from models.news import Category, News
 
 
@@ -29,10 +31,13 @@ async def get_news_detail(db: AsyncSession, news_id: int):
     return result.scalar_one_or_none()
 
 
-async def increase_news_views(db: AsyncSession, news_id: int):
+async def increase_news_views(db: AsyncSession, news_id: int, category_id: int):
     stmt = update(News).where(News.id == news_id).values(views=News.views + 1)
     result = await db.execute(stmt)
     await db.commit()
+
+    if result.rowcount > 0:
+        await invalidate_news_after_view_update(news_id, category_id)
 
     # 更新 → 检查数据库是否真的命中了数据 → 命中了返回True
     return result.rowcount > 0

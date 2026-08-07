@@ -3,6 +3,7 @@ from pathlib import Path
 
 from utils.create_prompt import load_template_text
 from crud import ai_chat as ai_chat_crud
+from config.settings import get_settings
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 
@@ -83,7 +84,7 @@ async def refresh_session_summary_if_needed(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=get_settings().llm_request_timeout_seconds) as client:
             resp = await client.post(api_endpoint, headers=headers, json=req_json)
             if resp.status_code >= 400:
                 logger.warning(

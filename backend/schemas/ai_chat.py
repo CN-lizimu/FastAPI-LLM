@@ -13,7 +13,7 @@ class AIChatRequest(BaseModel):
     model: Optional[str] = None
     messages: list[ChatMessage] = Field(default_factory=list)
     stream: bool = True
-    session_id: Optional[str] = Field(default=None, comment="对话ID")
+    session_id: Optional[str] = Field(default=None, description="对话ID")
 
 class ChatSessionResponse(BaseModel):
     session_id: str

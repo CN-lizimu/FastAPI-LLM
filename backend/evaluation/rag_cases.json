@@ -1,0 +1,62 @@
+[
+  {
+    "id": "news-003",
+    "question": "我国通信技术试验卫星十一号发射情况如何？",
+    "expected_keywords": ["通信技术试验卫星十一号", "发射"],
+    "expected_document_id": 3
+  },
+  {
+    "id": "news-004",
+    "question": "2023年我国GDP同比增长多少？",
+    "expected_keywords": ["GDP", "5.2%"],
+    "expected_document_id": 4
+  },
+  {
+    "id": "news-006",
+    "question": "C919国产大飞机在东南亚进行了什么活动？",
+    "expected_keywords": ["C919", "东南亚", "演示飞行"],
+    "expected_document_id": 6
+  },
+  {
+    "id": "news-008",
+    "question": "我国科学家在量子计算领域取得了什么突破？",
+    "expected_keywords": ["量子计算", "突破"],
+    "expected_document_id": 8
+  },
+  {
+    "id": "news-011",
+    "question": "我国遥感四十一号卫星的发射情况是什么？",
+    "expected_keywords": ["遥感四十一号卫星", "发射"],
+    "expected_document_id": 11
+  },
+  {
+    "id": "news-014",
+    "question": "我国首口万米深地科探井有什么进展？",
+    "expected_keywords": ["万米深地科探井", "开钻"],
+    "expected_document_id": 14
+  },
+  {
+    "id": "news-016",
+    "question": "我国网络基础设施建设进展如何？",
+    "expected_keywords": ["网络基础设施", "建设"],
+    "expected_document_id": 16
+  },
+  {
+    "id": "news-018",
+    "question": "我国发明专利有效量突破了多少？",
+    "expected_keywords": ["发明专利", "500万件"],
+    "expected_document_id": 18
+  },
+  {
+    "id": "news-020",
+    "question": "我国水利建设投资首次突破了多少？",
+    "expected_keywords": ["水利建设投资", "突破"],
+    "expected_document_id": 20
+  },
+  {
+    "id": "news-170",
+    "question": "全球首个AI医疗诊断系统取得了什么进展？",
+    "expected_keywords": ["AI医疗诊断系统", "获批"],
+    "expected_document_id": 170
+  }
+]

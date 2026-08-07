@@ -2,7 +2,7 @@
 # key - value
 from typing import List, Dict, Any, Optional
 
-from config.cache_conf import get_json_cache, set_cache
+from config.cache_conf import delete_cache, delete_cache_pattern, get_json_cache, set_cache
 
 CATEGORIES_KEY = "news:categories"
 NEWS_LIST_PREFIX = "news_list:"
@@ -97,3 +97,11 @@ async def get_cached_related_news(news_id: int, category_id: int) -> Optional[Li
     """
     key = f"{RELATED_NEWS_PREFIX}{news_id}:{category_id}"
     return await get_json_cache(key)
+
+
+async def invalidate_news_after_view_update(news_id: int, category_id: int) -> int:
+    """Delete cached payloads whose views or ordering may now be stale."""
+    deleted = await delete_cache(f"{NEWS_DETAIL_PREFIX}{news_id}")
+    deleted += await delete_cache_pattern(f"{NEWS_LIST_PREFIX}{category_id}:*")
+    deleted += await delete_cache_pattern(f"{RELATED_NEWS_PREFIX}*:{category_id}")
+    return deleted
