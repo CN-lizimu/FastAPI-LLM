@@ -227,6 +227,18 @@ def _fuse_candidates(
     return ranked
 
 
+def _dense_candidates(results: list[tuple[Document, float]]) -> list[_Candidate]:
+    return [
+        _Candidate(
+            key=_document_key(document),
+            document=document,
+            dense_score=float(score),
+            dense_rank=rank,
+        )
+        for rank, (document, score) in enumerate(results, start=1)
+    ]
+
+
 def _candidate_document(candidate: _Candidate) -> Document:
     metadata = {
         **candidate.document.metadata,
@@ -397,7 +409,7 @@ async def retrieve_news(
     fusion_ms = 0.0
     if resolved.mode == "dense":
         accepted = [item for item in dense_results if item[1] >= resolved.score_threshold]
-        candidates = _fuse_candidates(accepted, [], resolved.rrf_k)[: resolved.final_top_k]
+        candidates = _dense_candidates(accepted)[: resolved.final_top_k]
     else:
         fusion_started = time.perf_counter()
         candidates = _fuse_candidates(dense_results, bm25_results, resolved.rrf_k)
@@ -442,7 +454,7 @@ async def retrieve_news(
     counts = {
         "dense": len(dense_results),
         "bm25": len(bm25_results),
-        "fusion": len(candidates),
+        "fusion": len(candidates) if resolved.mode == "hybrid" else 0,
         "final": len(documents),
     }
 

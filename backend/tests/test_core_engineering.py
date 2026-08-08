@@ -5,7 +5,16 @@ from fastapi import Request
 
 from config.chroma_conf import load_config_from_env
 from config.settings import get_settings
-from routers.ai_chat import _build_sources, _format_rag_docs
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+from main import _is_sse_response
+from routers.ai_chat import (
+    _build_sources,
+    _extract_token_usage,
+    _format_rag_docs,
+    _prompt_observability,
+)
 from utils.exception import general_exception_handler
 from utils.jwt_tokens import create_jwt, decode_jwt
 from utils.security import get_hash_password, verify_password
@@ -60,8 +69,6 @@ async def test_general_exception_response_does_not_leak_stack():
 
 
 def test_rag_context_and_sources_keep_provenance():
-    from langchain_core.documents import Document
-
     docs = [
         Document(
             page_content="新闻正文",
@@ -82,3 +89,45 @@ def test_rag_context_and_sources_keep_provenance():
     assert "新闻ID】8" in context
     assert sources[0]["news_id"] == 8
     assert sources[0]["score"] == 0.8765
+
+
+def test_sse_response_is_identified_by_content_type():
+    class FakeResponse:
+        headers = {"content-type": "text/event-stream; charset=utf-8"}
+
+    assert _is_sse_response(FakeResponse()) is True
+
+
+def test_prompt_observability_counts_rendered_content_and_duplicate_chunks():
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", "资料：{RAG_results}"), MessagesPlaceholder("recent_messages"), ("human", "{query}")]
+    )
+    docs = [
+        Document(page_content="新闻正文", metadata={"news_id": 8, "chunk_index": 0}),
+        Document(page_content="新闻正文", metadata={"news_id": 8, "chunk_index": 0}),
+    ]
+    metrics = _prompt_observability(
+        prompt,
+        {"RAG_results": "上下文", "recent_messages": [], "query": "问题"},
+        docs,
+    )
+
+    assert metrics["input_context_chars"] == len("资料：上下文问题")
+    assert metrics["rag_document_chars"] == len("新闻正文") * 2
+    assert metrics["duplicate_document_count"] == 1
+
+
+def test_token_usage_is_only_reported_when_provider_returns_it():
+    with_usage = type(
+        "Message",
+        (),
+        {"usage_metadata": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}},
+    )()
+    without_usage = type("Message", (), {"usage_metadata": None, "response_metadata": {}})()
+
+    assert _extract_token_usage(with_usage) == {
+        "prompt_tokens": 10,
+        "completion_tokens": 4,
+        "total_tokens": 14,
+    }
+    assert _extract_token_usage(without_usage) is None

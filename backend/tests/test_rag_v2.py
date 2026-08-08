@@ -7,6 +7,7 @@ from services.bm25_retriever import BM25Index, tokenize_chinese_news
 from services.get_retrievel import needs_query_rewrite
 from services.retriever_factory import (
     RetrievalOptions,
+    _dense_candidates,
     _fuse_candidates,
     _resolve_options,
     _run_reranker,
@@ -57,6 +58,16 @@ def test_rrf_fuses_ranks_without_adding_raw_scores():
     assert by_id[1].dense_rank == 1
     assert by_id[2].bm25_rank == 1
     assert by_id[2].rrf_score == pytest.approx(1 / 62 + 1 / 61)
+
+
+def test_dense_candidates_do_not_claim_rrf_or_bm25_metadata():
+    first = _document(1, "Dense first", "dense")
+    candidates = _dense_candidates([(first, 0.91)])
+
+    assert candidates[0].dense_rank == 1
+    assert candidates[0].bm25_rank is None
+    assert candidates[0].rrf_score is None
+    assert candidates[0].pre_rerank_rank is None
 
 
 def test_independent_question_skips_rewrite_even_with_history():

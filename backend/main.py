@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="FastAPI LLM News API", version="1.0.0")
 
 
+def _is_sse_response(response) -> bool:
+    content_type = response.headers.get("content-type", "").lower()
+    return content_type.startswith("text/event-stream")
+
+
 @app.middleware("http")
 async def trace_request(request: Request, call_next):
     incoming_trace_id = request.headers.get("X-Trace-Id", "").strip()
@@ -29,19 +34,23 @@ async def trace_request(request: Request, call_next):
     token = set_trace_id(trace_id)
     started = time.perf_counter()
     status_code = 500
+    streaming = False
     try:
         response = await call_next(request)
         status_code = response.status_code
+        streaming = _is_sse_response(response)
         response.headers["X-Trace-Id"] = trace_id
         return response
     finally:
         log_event(
             logger,
             logging.INFO,
-            "http_request_completed",
+            "http_stream_started" if streaming else "http_request_completed",
             method=request.method,
             path=request.url.path,
             status_code=status_code,
+            streaming=streaming,
+            timing_scope="response_headers_ready" if streaming else "response_completed",
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
         reset_trace_id(token)

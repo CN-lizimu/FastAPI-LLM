@@ -116,6 +116,64 @@ def _sse_payload(data) -> bytes:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def _content_chars(content) -> int:
+    if isinstance(content, str):
+        return len(content)
+    return len(json.dumps(content, ensure_ascii=False, default=str))
+
+
+def _prompt_observability(generation_prompt, generation_input: dict, docs) -> dict:
+    formatted_messages = generation_prompt.format_messages(**generation_input)
+    document_keys = [
+        (doc.metadata.get("news_id"), doc.metadata.get("chunk_index")) for doc in docs
+    ]
+    return {
+        "input_context_chars": sum(
+            _content_chars(message.content) for message in formatted_messages
+        ),
+        "input_message_count": len(formatted_messages),
+        "rag_context_chars": len(generation_input["RAG_results"]),
+        "rag_document_chars": sum(len(doc.page_content) for doc in docs),
+        "history_context_chars": sum(
+            _content_chars(message.content) for message in generation_input["recent_messages"]
+        ),
+        "duplicate_document_count": len(document_keys) - len(set(document_keys)),
+    }
+
+
+def _extract_token_usage(message) -> dict[str, int] | None:
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        response_metadata = getattr(message, "response_metadata", None) or {}
+        usage = response_metadata.get("token_usage") or response_metadata.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    values = {
+        "prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+        "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
+        "total_tokens": usage.get("total_tokens"),
+    }
+    if not any(isinstance(value, int) for value in values.values()):
+        return None
+    return {key: value for key, value in values.items() if isinstance(value, int)}
+
+
+def _reasoning_chars(message) -> int:
+    additional_kwargs = getattr(message, "additional_kwargs", None) or {}
+    reasoning_content = additional_kwargs.get("reasoning_content")
+    return len(reasoning_content) if isinstance(reasoning_content, str) else 0
+
+
+def _usage_log_fields(usage: dict[str, int] | None) -> dict[str, int | None]:
+    usage = usage or {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+    }
+
+
 async def _prepare_rag(question: str, recent_messages: list, user_id: int, session_id: str):
     settings = get_settings()
     rewrite_started = time.perf_counter()
@@ -258,6 +316,7 @@ async def ai_chat(
             "recent_messages": recent_messages,
             "RAG_results": _format_rag_docs(docs),
         }
+        prompt_metrics = _prompt_observability(generation_prompt, generation_input, docs)
         sources = _build_sources(docs)
         active_model_name = get_chat_model_name()
 
@@ -301,7 +360,12 @@ async def ai_chat(
                 assistant_text_parts: list[str] = []
                 llm_started = time.perf_counter()
                 completed = False
+                generation_succeeded = False
+                generation_finished_at = None
                 chunk_count = 0
+                first_token_ms = None
+                token_usage = None
+                reasoning_character_count = 0
                 model_stream = generation_chain.astream(generation_input) if docs else None
                 log_event(
                     logger,
@@ -315,6 +379,7 @@ async def ai_chat(
                     stream=True,
                     contextual_document_count=len(docs),
                     skipped_due_to_no_context=not docs,
+                    **prompt_metrics,
                 )
                 try:
                     if sources:
@@ -339,13 +404,23 @@ async def ai_chat(
                                     )
                                     raise asyncio.CancelledError
 
+                                chunk_usage = _extract_token_usage(chunk)
+                                if chunk_usage:
+                                    token_usage = chunk_usage
+                                reasoning_character_count += _reasoning_chars(chunk)
                                 content = getattr(chunk, "content", "") or ""
                                 if not content:
                                     continue
+                                if first_token_ms is None:
+                                    first_token_ms = round(
+                                        (time.perf_counter() - llm_started) * 1000, 2
+                                    )
                                 chunk_count += 1
                                 assistant_text_parts.append(content)
                                 yield _sse_payload({"choices": [{"delta": {"content": content}}]})
 
+                    generation_finished_at = time.perf_counter()
+                    generation_succeeded = True
                     assistant_text = "".join(assistant_text_parts).strip()
                     if assistant_text:
                         async with AsyncSessionLocal() as stream_db:
@@ -413,7 +488,12 @@ async def ai_chat(
                         with suppress(Exception):
                             await model_stream.aclose()
                     release_llm_slot()
-                    llm_ms = round((time.perf_counter() - llm_started) * 1000, 2)
+                    finished_at = generation_finished_at or time.perf_counter()
+                    llm_ms = round((finished_at - llm_started) * 1000, 2)
+                    post_generation_ms = round(
+                        max(0.0, time.perf_counter() - finished_at) * 1000,
+                        2,
+                    )
                     log_event(
                         logger,
                         logging.INFO,
@@ -421,10 +501,17 @@ async def ai_chat(
                         user_id=user.id,
                         session_id=session_id,
                         generation_duration_ms=llm_ms,
+                        generation_total_ms=llm_ms,
+                        time_to_first_token_ms=first_token_ms,
+                        input_context_chars=prompt_metrics["input_context_chars"],
                         output_character_count=sum(len(part) for part in assistant_text_parts),
-                        success=completed,
+                        output_chars=sum(len(part) for part in assistant_text_parts),
+                        reasoning_character_count=reasoning_character_count,
+                        reasoning_detected=reasoning_character_count > 0,
+                        success=generation_succeeded,
                         sse_chunk_count=chunk_count,
                         skipped_due_to_no_context=not docs,
+                        **_usage_log_fields(token_usage),
                     )
                     log_event(
                         logger,
@@ -437,6 +524,7 @@ async def ai_chat(
                         retrieval_ms=retrieval_ms,
                         **retrieval_result.timings_ms,
                         llm_ms=llm_ms,
+                        post_generation_ms=post_generation_ms,
                         total_ms=round((time.perf_counter() - request_started) * 1000, 2),
                         retrieved_document_count=len(docs),
                     )
@@ -451,6 +539,9 @@ async def ai_chat(
         llm_started = time.perf_counter()
         llm_succeeded = False
         assistant_text = ""
+        token_usage = None
+        reasoning_character_count = 0
+        llm_ms = 0.0
         log_event(
             logger,
             logging.INFO,
@@ -463,6 +554,7 @@ async def ai_chat(
             stream=False,
             contextual_document_count=len(docs),
             skipped_due_to_no_context=not docs,
+            **prompt_metrics,
         )
         try:
             if docs:
@@ -471,6 +563,8 @@ async def ai_chat(
                     timeout=settings.llm_request_timeout_seconds,
                 )
                 assistant_text = getattr(ai_message, "content", "") or ""
+                token_usage = _extract_token_usage(ai_message)
+                reasoning_character_count = _reasoning_chars(ai_message)
             else:
                 assistant_text = NO_RELEVANT_DOCUMENTS_ANSWER
             llm_succeeded = True
@@ -480,19 +574,28 @@ async def ai_chat(
             logger.exception("LLM invocation failed")
             raise HTTPException(status_code=502, detail="上游模型服务暂时不可用") from exc
         finally:
+            llm_ms = round((time.perf_counter() - llm_started) * 1000, 2)
             log_event(
                 logger,
                 logging.INFO,
                 "llm_generation_completed",
                 user_id=user.id,
                 session_id=session_id,
-                generation_duration_ms=round((time.perf_counter() - llm_started) * 1000, 2),
+                generation_duration_ms=llm_ms,
+                generation_total_ms=llm_ms,
+                time_to_first_token_ms=None,
+                input_context_chars=prompt_metrics["input_context_chars"],
                 output_character_count=len(assistant_text),
+                output_chars=len(assistant_text),
+                reasoning_character_count=reasoning_character_count,
+                reasoning_detected=reasoning_character_count > 0,
                 success=llm_succeeded,
                 sse_chunk_count=0,
                 skipped_due_to_no_context=not docs,
+                **_usage_log_fields(token_usage),
             )
 
+        post_generation_started = time.perf_counter()
         if assistant_text:
             new_message = await ai_chat_crud.add_chat_message(
                 db=db,
@@ -514,7 +617,10 @@ async def ai_chat(
                 active_model_name,
             )
 
-        llm_ms = round((time.perf_counter() - llm_started) * 1000, 2)
+        post_generation_ms = round(
+            (time.perf_counter() - post_generation_started) * 1000,
+            2,
+        )
         log_event(
             logger,
             logging.INFO,
@@ -526,6 +632,7 @@ async def ai_chat(
             retrieval_ms=retrieval_ms,
             **retrieval_result.timings_ms,
             llm_ms=llm_ms,
+            post_generation_ms=post_generation_ms,
             total_ms=round((time.perf_counter() - request_started) * 1000, 2),
             retrieved_document_count=len(docs),
         )
