@@ -15,14 +15,14 @@ from crud import ai_chat as ai_chat_crud
 from models.users import User
 from schemas.ai_chat import AIChatRequest, ChatMessage, ChatSessionMessagesResponse, ChatSessionResponse
 from services.ai_runtime import AIConcurrencyTimeout, acquire_llm_slot, release_llm_slot
-from services.get_retrievel import get_retrievel_chain
+from services.get_retrievel import get_retrievel_chain, needs_query_rewrite
 from services.model_factory import (
     get_chat_model,
     get_chat_model_name,
     get_dashscope_api_key,
     get_dashscope_chat_endpoint,
 )
-from services.retriever_factory import retrieve_news_documents
+from services.retriever_factory import RetrievalResult, retrieve_news
 from services.update_summary import refresh_session_summary_if_needed
 from utils.auth import get_current_user
 from utils.create_prompt import (
@@ -102,6 +102,11 @@ def _build_sources(docs) -> list[dict]:
                 "publish_time": metadata.get("publish_time"),
                 "source": metadata.get("source"),
                 "score": round(float(metadata.get("relevance_score", 0)), 4),
+                "dense_rank": metadata.get("dense_rank"),
+                "bm25_rank": metadata.get("bm25_rank"),
+                "rrf_score": metadata.get("rrf_score"),
+                "rerank_score": metadata.get("rerank_score"),
+                "final_rank": metadata.get("final_rank"),
             }
         )
     return sources
@@ -114,10 +119,19 @@ def _sse_payload(data) -> bytes:
 async def _prepare_rag(question: str, recent_messages: list, user_id: int, session_id: str):
     settings = get_settings()
     rewrite_started = time.perf_counter()
-    rewritten_query = await asyncio.wait_for(
-        get_retrievel_chain().ainvoke({"query": question, "recent_messages": recent_messages}),
-        timeout=settings.llm_request_timeout_seconds,
-    )
+    rewrite_required = needs_query_rewrite(question, recent_messages)
+    if rewrite_required:
+        rewritten_query = await asyncio.wait_for(
+            get_retrievel_chain().ainvoke(
+                {"query": question, "recent_messages": recent_messages}
+            ),
+            timeout=settings.llm_request_timeout_seconds,
+        )
+        rewritten_query = rewritten_query.strip() or question
+        rewrite_reason = "context_reference_detected"
+    else:
+        rewritten_query = question
+        rewrite_reason = "independent_query"
     rewrite_ms = round((time.perf_counter() - rewrite_started) * 1000, 2)
     log_event(
         logger,
@@ -127,17 +141,17 @@ async def _prepare_rag(question: str, recent_messages: list, user_id: int, sessi
         session_id=session_id,
         original_query=question,
         rewritten_query=rewritten_query,
+        rewrite_required=rewrite_required,
         rewrite_applied=rewritten_query.strip() != question.strip(),
+        reason=rewrite_reason,
         duration_ms=rewrite_ms,
     )
 
-    retrieval_started = time.perf_counter()
-    docs = await asyncio.wait_for(
-        retrieve_news_documents(rewritten_query),
+    retrieval_result: RetrievalResult = await asyncio.wait_for(
+        retrieve_news(rewritten_query),
         timeout=settings.rag_retrieval_timeout_seconds,
     )
-    retrieval_ms = round((time.perf_counter() - retrieval_started) * 1000, 2)
-    return rewritten_query, docs, rewrite_ms, retrieval_ms
+    return rewritten_query, retrieval_result, rewrite_ms
 
 
 @router.post("/chat")
@@ -199,12 +213,14 @@ async def ai_chat(
         recent_messages = build_langchain_summary_history(summary, recent_context)
 
         try:
-            rewritten_query, docs, rewrite_ms, retrieval_ms = await _prepare_rag(
+            rewritten_query, retrieval_result, rewrite_ms = await _prepare_rag(
                 current_question,
                 recent_messages,
                 user.id,
                 session_id,
             )
+            docs = retrieval_result.documents
+            retrieval_ms = retrieval_result.timings_ms["retrieval_total_ms"]
         except TimeoutError as exc:
             log_event(
                 logger,
@@ -419,6 +435,7 @@ async def ai_chat(
                         success=completed,
                         rewrite_ms=rewrite_ms,
                         retrieval_ms=retrieval_ms,
+                        **retrieval_result.timings_ms,
                         llm_ms=llm_ms,
                         total_ms=round((time.perf_counter() - request_started) * 1000, 2),
                         retrieved_document_count=len(docs),
@@ -507,6 +524,7 @@ async def ai_chat(
             success=True,
             rewrite_ms=rewrite_ms,
             retrieval_ms=retrieval_ms,
+            **retrieval_result.timings_ms,
             llm_ms=llm_ms,
             total_ms=round((time.perf_counter() - request_started) * 1000, 2),
             retrieved_document_count=len(docs),

@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = Field(default=100, ge=0)
     rag_top_k: int = Field(default=5, ge=1, le=50)
     rag_score_threshold: float = Field(default=0.5, ge=-1, le=1)
+    rag_retrieval_mode: Literal["dense", "hybrid"] = "dense"
+    rag_dense_candidate_k: int = Field(default=20, ge=1, le=100)
+    rag_bm25_candidate_k: int = Field(default=20, ge=1, le=100)
+    rag_rrf_k: int = Field(default=60, ge=1)
+    rag_final_top_k: int = Field(default=5, ge=1, le=50)
+    rag_bm25_k1: float = Field(default=1.5, gt=0)
+    rag_bm25_b: float = Field(default=0.75, ge=0, le=1)
+    rag_rerank_enabled: bool = False
+    rag_rerank_candidate_k: int = Field(default=10, ge=1, le=100)
+    rag_rerank_model: str = "gte-rerank-v2"
+    rag_rerank_timeout_seconds: float = Field(default=15.0, gt=0)
+    rag_rerank_document_max_chars: int = Field(default=2000, ge=100, le=10000)
     rag_retrieval_timeout_seconds: float = Field(default=30.0, gt=0)
     rag_db_fetch_batch_size: int = Field(default=5, ge=1)
     rag_write_batch_size: int = Field(default=5, ge=1)

@@ -3,110 +3,297 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import time
+import math
+import statistics
 from datetime import datetime, timezone
 from pathlib import Path
-
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Any
 
 from config.settings import get_settings
-from services.model_factory import get_chat_model
-from services.retriever_factory import retrieve_news_documents
-from utils.create_prompt import load_system_prompt_text
+from services.retriever_factory import RetrievalOptions, retrieve_news
 
 
 BASE_DIR = Path(__file__).resolve().parent
+PIPELINES = {
+    "dense": RetrievalOptions(mode="dense", rerank_enabled=False),
+    "hybrid": RetrievalOptions(mode="hybrid", rerank_enabled=False),
+    "hybrid_rerank": RetrievalOptions(mode="hybrid", rerank_enabled=True),
+}
 
 
-def _load_cases(path: Path) -> list[dict]:
+def _load_cases(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _format_docs(docs) -> str:
-    return "\n\n".join(
-        f"【新闻ID】{doc.metadata.get('news_id')}\n"
-        f"【标题】{doc.metadata.get('title')}\n"
-        f"【内容】{doc.page_content}"
-        for doc in docs
-    )
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, math.ceil(percentile * len(ordered)) - 1)
+    return round(ordered[index], 2)
 
 
-async def _generate_answer(question: str, docs) -> str:
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", load_system_prompt_text()),
-            ("human", "用户问：\n{query}"),
+def _distribution(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"min": None, "mean": None, "median": None, "max": None}
+    return {
+        "min": round(min(values), 4),
+        "mean": round(statistics.fmean(values), 4),
+        "median": round(statistics.median(values), 4),
+        "max": round(max(values), 4),
+    }
+
+
+def _serialize_document(document) -> dict[str, Any]:
+    metadata = document.metadata
+    return {
+        "news_id": metadata.get("news_id"),
+        "title": metadata.get("title"),
+        "chunk_index": metadata.get("chunk_index"),
+        "dense_score": metadata.get("dense_score"),
+        "dense_rank": metadata.get("dense_rank"),
+        "bm25_score": metadata.get("bm25_score"),
+        "bm25_rank": metadata.get("bm25_rank"),
+        "rrf_score": metadata.get("rrf_score"),
+        "pre_rerank_rank": metadata.get("pre_rerank_rank"),
+        "rerank_score": metadata.get("rerank_score"),
+        "final_rank": metadata.get("final_rank"),
+    }
+
+
+def _documents_at_threshold(result: dict[str, Any], threshold: float) -> list[dict[str, Any]]:
+    if result["highest_dense_score"] is None or result["highest_dense_score"] < threshold:
+        return []
+    if result["pipeline"] == "dense":
+        return [
+            document
+            for document in result["retrieved_documents"]
+            if (document["dense_score"] or float("-inf")) >= threshold
         ]
+    return result["retrieved_documents"]
+
+
+def _rank_of_expected(documents: list[dict[str, Any]], expected_document_id: int) -> int | None:
+    for rank, document in enumerate(documents, start=1):
+        if document["news_id"] == expected_document_id:
+            return rank
+    return None
+
+
+async def _evaluate_query(
+    *,
+    case: dict[str, Any],
+    pipeline: str,
+    options: RetrievalOptions,
+    base_threshold: float,
+) -> dict[str, Any]:
+    settings = get_settings()
+    effective_options = RetrievalOptions(
+        mode=options.mode,
+        rerank_enabled=options.rerank_enabled,
+        dense_candidate_k=settings.rag_dense_candidate_k,
+        bm25_candidate_k=settings.rag_bm25_candidate_k,
+        rerank_candidate_k=settings.rag_rerank_candidate_k,
+        final_top_k=settings.rag_final_top_k,
+        score_threshold=base_threshold,
     )
-    response = await asyncio.wait_for(
-        (prompt | get_chat_model()).ainvoke(
-            {"query": question, "RAG_results": _format_docs(docs)}
-        ),
-        timeout=get_settings().llm_request_timeout_seconds,
+    timeout = settings.rag_retrieval_timeout_seconds
+    if options.rerank_enabled:
+        timeout += settings.rag_rerank_timeout_seconds
+    retrieval = await asyncio.wait_for(
+        retrieve_news(case["question"], effective_options), timeout=timeout
     )
-    return getattr(response, "content", "") or ""
-
-
-async def evaluate_case(case: dict, generate_answer: bool) -> dict:
-    total_started = time.perf_counter()
-    retrieval_started = time.perf_counter()
-    docs = await asyncio.wait_for(
-        retrieve_news_documents(case["question"]),
-        timeout=get_settings().rag_retrieval_timeout_seconds,
-    )
-    retrieval_latency_ms = round((time.perf_counter() - retrieval_started) * 1000, 2)
-
-    retrieved_documents = [
-        {
-            "news_id": doc.metadata.get("news_id"),
-            "title": doc.metadata.get("title"),
-            "score": round(float(doc.metadata.get("relevance_score", 0)), 4),
-        }
-        for doc in docs
-    ]
-    retrieved_ids = {item["news_id"] for item in retrieved_documents}
-    expected_document_id = case.get("expected_document_id")
-    answer = await _generate_answer(case["question"], docs) if generate_answer else None
-
     return {
         **case,
-        "retrieved_documents": retrieved_documents,
-        "retrieval_latency_ms": retrieval_latency_ms,
-        "answer": answer,
-        "total_latency_ms": round((time.perf_counter() - total_started) * 1000, 2),
-        "recall_at_k": int(expected_document_id in retrieved_ids) if expected_document_id is not None else None,
+        "pipeline": pipeline,
+        "highest_dense_score": retrieval.highest_dense_score,
+        "retrieved_documents": [_serialize_document(doc) for doc in retrieval.documents],
+        "retrieval_latency_ms": retrieval.timings_ms["retrieval_total_ms"],
+        "timings_ms": retrieval.timings_ms,
+        "candidate_counts": retrieval.candidate_counts,
+        "rerank_succeeded": retrieval.rerank_succeeded,
+    }
+
+
+def _normal_metrics(results: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
+    ranks = [
+        _rank_of_expected(
+            _documents_at_threshold(result, threshold), result["expected_document_id"]
+        )
+        for result in results
+    ]
+    metrics: dict[str, Any] = {}
+    for k in (1, 3, 5):
+        hits = [int(rank is not None and rank <= k) for rank in ranks]
+        # Every current case has one relevant news ID, so Hit@K and Recall@K are equal.
+        metrics[f"recall_at_{k}"] = round(statistics.fmean(hits), 4)
+        metrics[f"hit_at_{k}"] = round(statistics.fmean(hits), 4)
+    metrics["mrr"] = round(
+        statistics.fmean(1.0 / rank if rank is not None else 0.0 for rank in ranks), 4
+    )
+    metrics["queries_without_context"] = sum(
+        not _documents_at_threshold(result, threshold) for result in results
+    )
+    return metrics
+
+
+def _ood_metrics(results: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
+    details = []
+    for result in results:
+        accepted_documents = _documents_at_threshold(result, threshold)
+        details.append(
+            {
+                "id": result["id"],
+                "question": result["question"],
+                "highest_score": result["highest_dense_score"],
+                "threshold": threshold,
+                "accepted_document_count": len(accepted_documents),
+                "correctly_rejected": not accepted_documents,
+            }
+        )
+    return {
+        "ood_rejection_accuracy": round(
+            statistics.fmean(int(item["correctly_rejected"]) for item in details), 4
+        ),
+        "details": details,
+    }
+
+
+def _pipeline_summary(
+    normal_results: list[dict[str, Any]],
+    ood_results: list[dict[str, Any]],
+    threshold: float,
+) -> dict[str, Any]:
+    latencies = [result["retrieval_latency_ms"] for result in normal_results]
+    normal_scores = [
+        result["highest_dense_score"]
+        for result in normal_results
+        if result["highest_dense_score"] is not None
+    ]
+    ood_scores = [
+        result["highest_dense_score"]
+        for result in ood_results
+        if result["highest_dense_score"] is not None
+    ]
+    return {
+        **_normal_metrics(normal_results, threshold),
+        "ood_rejection_accuracy": _ood_metrics(ood_results, threshold)[
+            "ood_rejection_accuracy"
+        ],
+        "average_latency_ms": round(statistics.fmean(latencies), 2),
+        "p50_latency_ms": _percentile(latencies, 0.50),
+        "p95_latency_ms": _percentile(latencies, 0.95),
+        "normal_highest_score_distribution": _distribution(normal_scores),
+        "ood_highest_score_distribution": _distribution(ood_scores),
+        "rerank_failures": sum(
+            result["pipeline"] == "hybrid_rerank" and not result["rerank_succeeded"]
+            for result in normal_results + ood_results
+        ),
+    }
+
+
+async def run_evaluation(
+    *,
+    normal_cases: list[dict[str, Any]],
+    ood_cases: list[dict[str, Any]],
+    thresholds: list[float],
+) -> dict[str, Any]:
+    base_threshold = min(thresholds)
+    warmup_case = normal_cases[0]
+    for pipeline, options in PIPELINES.items():
+        print(f"[{pipeline}] warm-up (excluded from latency metrics)")
+        await _evaluate_query(
+            case=warmup_case,
+            pipeline=pipeline,
+            options=options,
+            base_threshold=base_threshold,
+        )
+
+    details: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for pipeline, options in PIPELINES.items():
+        details[pipeline] = {"normal": [], "ood": []}
+        for case_type, cases in (("normal", normal_cases), ("ood", ood_cases)):
+            for index, case in enumerate(cases, start=1):
+                print(f"[{pipeline}] {case_type} {index}/{len(cases)}: {case['id']}")
+                details[pipeline][case_type].append(
+                    await _evaluate_query(
+                        case=case,
+                        pipeline=pipeline,
+                        options=options,
+                        base_threshold=base_threshold,
+                    )
+                )
+
+    settings = get_settings()
+    summaries = {
+        pipeline: _pipeline_summary(
+            pipeline_details["normal"],
+            pipeline_details["ood"],
+            settings.rag_score_threshold,
+        )
+        for pipeline, pipeline_details in details.items()
+    }
+    threshold_experiments = {
+        str(threshold): {
+            pipeline: {
+                **_normal_metrics(pipeline_details["normal"], threshold),
+                "ood_rejection_accuracy": _ood_metrics(
+                    pipeline_details["ood"], threshold
+                )["ood_rejection_accuracy"],
+            }
+            for pipeline, pipeline_details in details.items()
+        }
+        for threshold in thresholds
+    }
+    ood_details = {
+        pipeline: _ood_metrics(pipeline_details["ood"], settings.rag_score_threshold)[
+            "details"
+        ]
+        for pipeline, pipeline_details in details.items()
+    }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "configuration": {
+            "collection": settings.chroma_collection_name,
+            "distance_metric": settings.chroma_distance_metric,
+            "embedding_model": settings.dashscope_embedding_model,
+            "dense_candidate_k": settings.rag_dense_candidate_k,
+            "bm25_candidate_k": settings.rag_bm25_candidate_k,
+            "rrf_k": settings.rag_rrf_k,
+            "rerank_candidate_k": settings.rag_rerank_candidate_k,
+            "rerank_model": settings.rag_rerank_model,
+            "final_top_k": settings.rag_final_top_k,
+            "default_threshold": settings.rag_score_threshold,
+            "threshold_stage": "highest dense cosine relevance score query gate",
+        },
+        "normal_case_count": len(normal_cases),
+        "ood_case_count": len(ood_cases),
+        "warmup_excluded_from_metrics": True,
+        "summaries": summaries,
+        "threshold_experiments": threshold_experiments,
+        "ood_details": ood_details,
+        "details": details,
     }
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the minimal news RAG evaluation set.")
+    parser = argparse.ArgumentParser(description="Compare Dense, Hybrid, and Hybrid + Rerank RAG.")
     parser.add_argument("--cases", type=Path, default=BASE_DIR / "rag_cases.json")
-    parser.add_argument("--output", type=Path, default=BASE_DIR / "rag_results.json")
-    parser.add_argument("--generate-answers", action="store_true")
+    parser.add_argument("--ood-cases", type=Path, default=BASE_DIR / "rag_ood_cases.json")
+    parser.add_argument("--output", type=Path, default=BASE_DIR / "rag_v2_results.json")
+    parser.add_argument(
+        "--thresholds", nargs="+", type=float, default=[0.3, 0.4, 0.5, 0.6]
+    )
     args = parser.parse_args()
-
-    cases = _load_cases(args.cases)
-    results = []
-    for case in cases:
-        results.append(await evaluate_case(case, args.generate_answers))
-
-    scored = [item["recall_at_k"] for item in results if item["recall_at_k"] is not None]
-    report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "settings": {
-            "top_k": get_settings().rag_top_k,
-            "score_threshold": get_settings().rag_score_threshold,
-            "embedding_model": get_settings().dashscope_embedding_model,
-        },
-        "summary": {
-            "case_count": len(results),
-            "recall_at_k": round(sum(scored) / len(scored), 4) if scored else None,
-            "answers_generated": args.generate_answers,
-        },
-        "results": results,
-    }
-    args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(report["summary"], ensure_ascii=False))
+    report = await run_evaluation(
+        normal_cases=_load_cases(args.cases),
+        ood_cases=_load_cases(args.ood_cases),
+        thresholds=args.thresholds,
+    )
+    args.output.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+    print(json.dumps(report["summaries"], ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -88,6 +88,7 @@ frontend/node_modules/
 backend/chroma_db/
 backend/evaluation/rag_results.json
 backend/evaluation/metric_comparison_results.json
+backend/evaluation/rag_v2_results.json
 
 
 # Personal editor/workspace files

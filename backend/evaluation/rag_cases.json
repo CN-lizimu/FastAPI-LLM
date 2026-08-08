@@ -58,5 +58,29 @@
     "question": "全球首个AI医疗诊断系统取得了什么进展？",
     "expected_keywords": ["AI医疗诊断系统", "获批"],
     "expected_document_id": 170
+  },
+  {
+    "id": "news-302",
+    "question": "SpaceX星舰第三次试飞完成了哪些关键测试？",
+    "expected_keywords": ["SpaceX", "第三次试飞", "热防护系统"],
+    "expected_document_id": 302
+  },
+  {
+    "id": "news-304",
+    "question": "华为5G-A商用网络的峰值速率和延迟是多少？",
+    "expected_keywords": ["5G-A", "10Gbps", "1毫秒"],
+    "expected_document_id": 304
+  },
+  {
+    "id": "news-312",
+    "question": "英伟达H100芯片对模型训练效率有什么提升？",
+    "expected_keywords": ["H100", "训练时间", "缩短50%"],
+    "expected_document_id": 312
+  },
+  {
+    "id": "news-314",
+    "question": "GPT-4.5支持哪些模态，推理速度提升了多少？",
+    "expected_keywords": ["GPT-4.5", "文本", "图像", "音频", "40%"],
+    "expected_document_id": 314
   }
 ]
