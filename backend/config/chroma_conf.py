@@ -26,7 +26,7 @@ def load_config_from_env() -> IngestConfig:
         raise ValueError("RAG_CHUNK_OVERLAP 必须小于 RAG_CHUNK_SIZE")
 
     return IngestConfig(
-        collection_name=settings.chroma_collection_name,
+        collection_name=settings.rag_collection_name,
         persist_directory=settings.chroma_persist_directory,
         distance_metric=settings.chroma_distance_metric,
         chunk_size=settings.rag_chunk_size,

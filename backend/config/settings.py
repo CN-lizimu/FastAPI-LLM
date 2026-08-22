@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,10 +37,14 @@ class Settings(BaseSettings):
 
     dashscope_api_key: str = ""
     ali_access_key: str = ""
-    llm_model_id: str = "qwen3.6-flash"
+    chat_model: str = Field(validation_alias=AliasChoices("CHAT_MODEL", "LLM_MODEL_ID"))
     dashscope_api_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_api_endpoint: str = ""
-    dashscope_embedding_model: str = "text-embedding-v3"
+    embedding_model: str = Field(
+        validation_alias=AliasChoices("EMBEDDING_MODEL", "DASHSCOPE_EMBEDDING_MODEL")
+    )
+    allowed_chat_models: str = ""
+    allowed_embedding_models: str = ""
     llm_temperature: float = Field(default=0.2, ge=0, le=2)
     llm_max_tokens: int = Field(default=1024, ge=1)
     llm_max_retries: int = Field(default=2, ge=0)
@@ -49,10 +53,15 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = Field(default=4, ge=1)
     llm_concurrency_wait_timeout_seconds: float = Field(default=5.0, gt=0)
 
-    chroma_collection_name: str = "news_rag_cosine_candidate"
+    rag_collection_name: str = Field(
+        validation_alias=AliasChoices("RAG_COLLECTION_NAME", "CHROMA_COLLECTION_NAME")
+    )
     chroma_legacy_collection_name: str = "news_rag"
     chroma_cosine_candidate_collection_name: str = "news_rag_cosine_candidate"
-    chroma_persist_dir: str = str(BASE_DIR / "chroma_db")
+    chroma_persist_dir: str = Field(
+        default=str(BASE_DIR / "chroma_db"),
+        validation_alias=AliasChoices("CHROMA_PERSIST_DIRECTORY", "CHROMA_PERSIST_DIR"),
+    )
     chroma_distance_metric: Literal["cosine", "l2", "ip"] = "cosine"
     rag_chunk_size: int = Field(default=500, ge=50)
     rag_chunk_overlap: int = Field(default=100, ge=0)
@@ -105,6 +114,22 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
+    def allowed_chat_model_list(self) -> list[str]:
+        return [model.strip() for model in self.allowed_chat_models.split(",") if model.strip()]
+
+    @property
+    def allowed_embedding_model_list(self) -> list[str]:
+        return [model.strip() for model in self.allowed_embedding_models.split(",") if model.strip()]
+
+    @property
+    def chat_model_is_allowed(self) -> bool:
+        return self.chat_model in self.allowed_chat_model_list
+
+    @property
+    def embedding_model_is_allowed(self) -> bool:
+        return self.embedding_model in self.allowed_embedding_model_list
+
+    @property
     def chroma_persist_directory(self) -> str:
         path = Path(self.chroma_persist_dir)
         return str(path if path.is_absolute() else BASE_DIR / path)
@@ -115,7 +140,22 @@ class Settings(BaseSettings):
 
     @property
     def chat_model_id(self) -> str:
-        return self.llm_model_id
+        return self.chat_model
+
+    @property
+    def llm_model_id(self) -> str:
+        """Backward-compatible accessor for existing non-RAG callers."""
+        return self.chat_model
+
+    @property
+    def dashscope_embedding_model(self) -> str:
+        """Backward-compatible accessor while callers migrate to EMBEDDING_MODEL."""
+        return self.embedding_model
+
+    @property
+    def chroma_collection_name(self) -> str:
+        """Backward-compatible accessor while callers migrate to RAG_COLLECTION_NAME."""
+        return self.rag_collection_name
 
     @property
     def chat_completions_endpoint(self) -> str:

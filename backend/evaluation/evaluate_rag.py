@@ -254,9 +254,9 @@ async def run_evaluation(
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "configuration": {
-            "collection": settings.chroma_collection_name,
+        "collection": settings.rag_collection_name,
             "distance_metric": settings.chroma_distance_metric,
-            "embedding_model": settings.dashscope_embedding_model,
+        "embedding_model": settings.embedding_model,
             "dense_candidate_k": settings.rag_dense_candidate_k,
             "bm25_candidate_k": settings.rag_bm25_candidate_k,
             "rrf_k": settings.rag_rrf_k,

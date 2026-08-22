@@ -54,7 +54,7 @@ def _build_embedding_model() -> DashScopeEmbeddings:
         raise RuntimeError("未检测到 DashScope API Key，请在 .env 中配置 DASHSCOPE_API_KEY 或 ali_access_key")
 
     return DashScopeEmbeddings(
-        model=get_settings().dashscope_embedding_model,
+        model=get_settings().embedding_model,
         dashscope_api_key=api_key,
         max_retries=3,#增加重试机制，提升稳定性，尤其是在批量处理大量文本时，偶尔可能遇到网络问题或API限制导致请求失败，重试可以帮助自动恢复并完成任务
     )

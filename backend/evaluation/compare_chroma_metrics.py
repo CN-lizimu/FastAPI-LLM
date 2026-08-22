@@ -207,7 +207,7 @@ async def main() -> None:
     collections = {name: client.get_collection(name) for name in args.collections}
 
     embedding_model = DashScopeEmbeddings(
-        model=settings.dashscope_embedding_model,
+        model=settings.embedding_model,
         dashscope_api_key=settings.dashscope_key,
         max_retries=settings.rag_add_retry_attempts,
     )
@@ -248,7 +248,7 @@ async def main() -> None:
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "persist_directory": settings.chroma_persist_directory,
-        "embedding_model": settings.dashscope_embedding_model,
+        "embedding_model": settings.embedding_model,
         "normal_case_count": len(normal_cases),
         "broad_case_count": len(broad_cases),
         "ood_case_count": len(ood_cases),

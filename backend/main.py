@@ -58,8 +58,39 @@ async def trace_request(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup_db_bootstrap():
+    log_event(
+        logger,
+        logging.INFO,
+        "model_configuration_loaded",
+        chat_model=settings.chat_model,
+        embedding_model=settings.embedding_model,
+        collection=settings.rag_collection_name,
+    )
+    if not settings.chat_model_is_allowed:
+        log_event(
+            logger,
+            logging.WARNING,
+            "model_policy_warning",
+            model_type="chat",
+            configured_model=settings.chat_model,
+            allowed_models=settings.allowed_chat_model_list,
+            reason="CHAT_MODEL is not in ALLOWED_CHAT_MODELS",
+        )
+    if not settings.embedding_model_is_allowed:
+        log_event(
+            logger,
+            logging.WARNING,
+            "model_policy_warning",
+            model_type="embedding",
+            configured_model=settings.embedding_model,
+            allowed_models=settings.allowed_embedding_model_list,
+            reason="EMBEDDING_MODEL is not in ALLOWED_EMBEDDING_MODELS",
+        )
     await ensure_auth_tables()
     await ensure_ai_chat_tables()
+    from services.retriever_factory import get_news_vector_store
+
+    get_news_vector_store()
 
 
 @app.on_event("shutdown")

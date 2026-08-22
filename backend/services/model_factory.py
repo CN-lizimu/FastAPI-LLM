@@ -6,7 +6,7 @@ from config.settings import get_settings
 
 
 def get_chat_model_name() -> str:
-    return get_settings().chat_model_id
+    return get_settings().chat_model
 
 
 def get_dashscope_api_key() -> str:
@@ -26,7 +26,7 @@ def get_chat_model() -> ChatOpenAI:
         raise RuntimeError("服务端未配置 DASHSCOPE_API_KEY，无法初始化 LangChain Chat 模型")
 
     return ChatOpenAI(
-        model=settings.chat_model_id,
+        model=settings.chat_model,
         api_key=api_key,
         base_url=settings.dashscope_api_base_url,
         streaming=True,

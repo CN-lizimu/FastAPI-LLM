@@ -27,11 +27,27 @@ def test_central_settings_and_rag_config_are_consistent():
     assert settings.database_url
     assert settings.cors_origin_list
     assert "*" not in settings.cors_origin_list
-    assert rag.collection_name == settings.chroma_collection_name
+    assert rag.collection_name == settings.rag_collection_name
     assert rag.persist_directory == settings.chroma_persist_directory
     assert rag.chunk_size == settings.rag_chunk_size
     assert rag.chunk_overlap == settings.rag_chunk_overlap
     assert rag.chunk_overlap < rag.chunk_size
+
+
+def test_authorized_models_are_allowed_by_current_policy():
+    settings = get_settings()
+
+    assert settings.chat_model_is_allowed
+    assert settings.embedding_model_is_allowed
+
+
+def test_model_policy_rejects_models_outside_allowlist():
+    settings = get_settings()
+
+    assert not settings.model_copy(update={"chat_model": "unapproved-chat-model"}).chat_model_is_allowed
+    assert not settings.model_copy(
+        update={"embedding_model": "unapproved-embedding-model"}
+    ).embedding_model_is_allowed
 
 
 def test_jwt_round_trip_uses_claims_and_expiry():

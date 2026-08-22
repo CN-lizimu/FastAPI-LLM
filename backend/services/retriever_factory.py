@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any, Literal
 
+import chromadb
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
@@ -117,16 +118,70 @@ def get_news_vector_store() -> Chroma:
         raise RuntimeError("服务端未配置 DASHSCOPE_API_KEY，无法初始化检索器")
 
     chroma_config = load_config_from_env()
+    client = chromadb.PersistentClient(path=chroma_config.persist_directory)
+    existing_names = {collection.name for collection in client.list_collections()}
+    if chroma_config.collection_name not in existing_names:
+        raise RuntimeError(
+            "RAG Collection不存在，拒绝自动创建空Collection: "
+            f"collection={chroma_config.collection_name}, "
+            f"persist_directory={chroma_config.persist_directory}"
+        )
+
+    collection = client.get_collection(chroma_config.collection_name)
+    metadata = collection.metadata or {}
+    configuration = getattr(collection, "configuration", None) or {}
+    hnsw_config = configuration.get("hnsw") or {}
+    actual_metric = hnsw_config.get("space") or metadata.get("hnsw:space") or "l2"
+    actual_embedding_model = metadata.get("embedding_model")
+    if actual_embedding_model != settings.embedding_model:
+        raise RuntimeError(
+            "RAG Embedding模型与Collection不一致: "
+            f"configured={settings.embedding_model}, collection={actual_embedding_model or 'missing'}"
+        )
+    if actual_metric != chroma_config.distance_metric:
+        raise RuntimeError(
+            "RAG距离度量与Collection不一致: "
+            f"configured={chroma_config.distance_metric}, collection={actual_metric}"
+        )
+
+    sample = collection.get(limit=1, include=["embeddings"])
+    stored_embeddings = sample.get("embeddings")
+    vector_dimension = (
+        len(stored_embeddings[0])
+        if stored_embeddings is not None and len(stored_embeddings) > 0
+        else None
+    )
+    declared_dimension = metadata.get("embedding_dimension")
+    if vector_dimension is None:
+        raise RuntimeError(f"RAG Collection为空: collection={chroma_config.collection_name}")
+    if declared_dimension is None or int(declared_dimension) != vector_dimension:
+        raise RuntimeError(
+            "RAG向量维度metadata与实际数据不一致: "
+            f"declared={declared_dimension or 'missing'}, actual={vector_dimension}"
+        )
+
+    log_event(
+        logger,
+        logging.INFO,
+        "rag_vector_store_initialized",
+        collection=chroma_config.collection_name,
+        embedding_model=settings.embedding_model,
+        vector_dimension=vector_dimension,
+        distance_metric=actual_metric,
+        document_count=collection.count(),
+        persist_directory=chroma_config.persist_directory,
+    )
+
     embeddings = DashScopeEmbeddings(
-        model=settings.dashscope_embedding_model,
+        model=settings.embedding_model,
         dashscope_api_key=api_key,
         max_retries=settings.rag_add_retry_attempts,
     )
     return Chroma(
         collection_name=chroma_config.collection_name,
+        client=client,
         persist_directory=chroma_config.persist_directory,
         embedding_function=embeddings,
-        collection_metadata={"hnsw:space": chroma_config.distance_metric},
     )
 
 
@@ -137,10 +192,18 @@ def get_collection_runtime_info(vector_store: Chroma | None = None) -> dict[str,
     hnsw_config = configuration.get("hnsw") or {}
     metadata = collection.metadata or {}
     metric = hnsw_config.get("space") or metadata.get("hnsw:space") or "l2"
+    vector_dimension = metadata.get("embedding_dimension")
+    if hasattr(collection, "get"):
+        sample = collection.get(limit=1, include=["embeddings"])
+        embeddings = sample.get("embeddings")
+        if embeddings is not None and len(embeddings):
+            vector_dimension = len(embeddings[0])
     return {
         "collection": collection.name,
         "persist_directory": get_settings().chroma_persist_directory,
         "metadata": metadata or None,
+        "embedding_model": metadata.get("embedding_model"),
+        "vector_dimension": vector_dimension,
         "distance_metric": metric,
         "document_count": collection.count(),
     }
